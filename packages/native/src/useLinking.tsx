@@ -1,12 +1,14 @@
 import * as React from 'react';
-import { Linking } from 'react-native';
 import {
-  getActionFromState,
   getStateFromPath as getStateFromPathDefault,
+  getPathFromState as getPathFromStateDefault,
   NavigationContainerRef,
+  NavigationState,
+  getActionFromState,
 } from '@react-navigation/core';
 
 type GetStateFromPath = typeof getStateFromPathDefault;
+type GetPathFromState = typeof getPathFromStateDefault;
 
 type Config = Parameters<GetStateFromPath>[1];
 
@@ -31,14 +33,42 @@ type Options = {
    */
   config?: Config;
   /**
-   * Custom function to parse the URL object to a valid navigation state (advanced).
+   * Custom function to parse the URL to a valid navigation state (advanced).
    */
   getStateFromPath?: GetStateFromPath;
+  /**
+   * Custom function to conver the state object to a valid URL (advanced).
+   */
+  getPathFromState?: GetPathFromState;
+};
+
+const getStateLength = (state: NavigationState) => {
+  let length = 0;
+
+  if (state.history) {
+    length = state.history.length;
+  } else {
+    length = state.index + 1;
+  }
+
+  const focusedState = state.routes[state.index].state;
+
+  if (focusedState && !focusedState.stale) {
+    // If the focused route has history entries, we need to count them as well
+    length += getStateLength(focusedState as NavigationState) - 1;
+  }
+
+  return length;
 };
 
 export default function useLinking(
   ref: React.RefObject<NavigationContainerRef>,
-  { prefixes, config, getStateFromPath = getStateFromPathDefault }: Options
+  {
+    prefixes,
+    config,
+    getStateFromPath = getStateFromPathDefault,
+    getPathFromState = getPathFromStateDefault,
+  }: Options
 ) {
   // We store these options in ref to avoid re-creating getInitialState and re-subscribing listeners
   // This lets user avoid wrapping the items in `React.useCallback` or `React.useMemo`
@@ -46,44 +76,70 @@ export default function useLinking(
   const prefixesRef = React.useRef(prefixes);
   const configRef = React.useRef(config);
   const getStateFromPathRef = React.useRef(getStateFromPath);
+  const getPathFromStateRef = React.useRef(getPathFromState);
 
   React.useEffect(() => {
     prefixesRef.current = prefixes;
     configRef.current = config;
     getStateFromPathRef.current = getStateFromPath;
-  }, [config, getStateFromPath, prefixes]);
+    getPathFromStateRef.current = getPathFromState;
+  }, [config, getPathFromState, getStateFromPath, prefixes]);
 
-  const extractPathFromURL = React.useCallback((url: string) => {
-    for (const prefix of prefixesRef.current) {
-      if (url.startsWith(prefix)) {
-        return url.replace(prefix, '');
-      }
-    }
-
-    return undefined;
-  }, []);
-
-  const getInitialState = React.useCallback(async () => {
-    const url = await Linking.getInitialURL();
-    const path = url ? extractPathFromURL(url) : null;
+  const getInitialState = React.useCallback(() => {
+    const path = location.pathname + location.search;
 
     if (path) {
       return getStateFromPathRef.current(path, configRef.current);
     } else {
       return undefined;
     }
-  }, [extractPathFromURL]);
+  }, []);
+
+  const previousStateLengthRef = React.useRef<number | undefined>(undefined);
+  const previousHistoryIndexRef = React.useRef(0);
+
+  const pendingIndexChangeRef = React.useRef<number | undefined>();
+  const pendingStateUpdateRef = React.useRef<boolean>(false);
 
   React.useEffect(() => {
-    const listener = ({ url }: { url: string }) => {
-      const path = extractPathFromURL(url);
+    window.addEventListener('popstate', () => {
       const navigation = ref.current;
 
-      if (navigation && path) {
-        const state = getStateFromPathRef.current(path, configRef.current);
+      if (!navigation) {
+        return;
+      }
+
+      const previousHistoryIndex = previousHistoryIndexRef.current;
+      const historyIndex = history.state?.index ?? 0;
+
+      previousHistoryIndexRef.current = historyIndex;
+
+      if (pendingIndexChangeRef.current === historyIndex) {
+        pendingIndexChangeRef.current = undefined;
+        return;
+      }
+
+      const state = navigation.getRootState();
+      const path = getPathFromStateRef.current(state, configRef.current);
+
+      if (previousHistoryIndex === historyIndex) {
+        if (location.pathname + location.search !== path) {
+          pendingStateUpdateRef.current = true;
+          history.replaceState(null, '', path);
+        }
+      } else if (previousHistoryIndex === historyIndex + 1) {
+        pendingStateUpdateRef.current = true;
+        navigation.goBack();
+      } else if (previousHistoryIndex === historyIndex - 1) {
+        const state = getStateFromPathRef.current(
+          location.pathname + location.search,
+          configRef.current
+        );
 
         if (state) {
           const action = getActionFromState(state);
+
+          pendingStateUpdateRef.current = true;
 
           if (action.type === 'RESET_ROOT') {
             navigation.resetRoot(action.payload);
@@ -91,13 +147,72 @@ export default function useLinking(
             navigation.dispatch(action);
           }
         }
+      } else {
+        // TODO
       }
-    };
+    });
+  }, [ref]);
 
-    Linking.addEventListener('url', listener);
+  React.useEffect(() => {
+    if (ref.current && previousStateLengthRef.current === undefined) {
+      previousStateLengthRef.current = getStateLength(
+        ref.current.getRootState()
+      );
+    }
 
-    return () => Linking.removeEventListener('url', listener);
-  }, [extractPathFromURL, ref]);
+    const unsubscribe = ref.current?.addListener('state', () => {
+      const navigation = ref.current;
+
+      if (!navigation) {
+        return;
+      }
+
+      const state = navigation.getRootState();
+      const path = getPathFromStateRef.current(state, configRef.current);
+
+      if (
+        pendingStateUpdateRef.current &&
+        location.pathname + location.search === path
+      ) {
+        pendingStateUpdateRef.current = false;
+        return;
+      }
+
+      const previousStateLength = previousStateLengthRef.current ?? 1;
+      const stateLength = getStateLength(state);
+
+      previousStateLengthRef.current = stateLength;
+
+      let index = history.state?.index ?? 0;
+
+      if (previousStateLength === stateLength) {
+        // If no new enrties were added to history in our navigation state, we want to replaceState
+        if (location.pathname + location.search !== path) {
+          history.replaceState({ index }, '', path);
+          previousHistoryIndexRef.current = index;
+        }
+      } else if (stateLength > previousStateLength) {
+        // If new enrties were added, pushState until we have same length
+        // This won't be accurate if multiple enrties were added at once, but that's the best we can do
+        for (let i = 0, l = stateLength - previousStateLength; i < l; i++) {
+          index++;
+          history.pushState({ index }, '', path);
+        }
+
+        previousHistoryIndexRef.current = index;
+      } else if (previousStateLength > stateLength) {
+        const delta = previousStateLength - stateLength;
+
+        // We need to set this to ignore the `popstate` event
+        pendingIndexChangeRef.current = index - delta;
+
+        // If new enrties were removed, go back so that we have same length
+        history.go(-delta);
+      }
+    });
+
+    return unsubscribe;
+  });
 
   return {
     getInitialState,

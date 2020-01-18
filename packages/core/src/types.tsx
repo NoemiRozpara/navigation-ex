@@ -590,15 +590,18 @@ export type RouteConfig<
 );
 
 export type NavigationContainerRef =
-  | (NavigationHelpers<ParamListBase> & {
-      /**
-       * Reset the navigation state of the root navigator to the provided state.
-       *
-       * @param state Navigation state object.
-       */
-      resetRoot(state?: PartialState<NavigationState> | NavigationState): void;
-      getRootState(): NavigationState;
-    })
+  | (NavigationHelpers<ParamListBase> &
+      EventConsumer<{ state: { data: { state: NavigationState } } }> & {
+        /**
+         * Reset the navigation state of the root navigator to the provided state.
+         *
+         * @param state Navigation state object.
+         */
+        resetRoot(
+          state?: PartialState<NavigationState> | NavigationState
+        ): void;
+        getRootState(): NavigationState;
+      })
   | undefined
   | null;
 

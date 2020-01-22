@@ -1,3 +1,5 @@
+/* global __DEV__ */
+
 import * as React from 'react';
 import * as CommonActions from './CommonActions';
 import EnsureSingleNavigator from './EnsureSingleNavigator';
@@ -242,6 +244,15 @@ const Container = React.forwardRef(function NavigationContainer(
   );
 
   React.useEffect(() => {
+    if (__DEV__) {
+      if (
+        typeof state !== 'undefined' &&
+        Object.prototype.toString.call(state) !== '[object Object]'
+      ) {
+        console.warn('Navigation state contains non-serialiable value');
+      }
+    }
+
     if (skipTrackingRef.current) {
       skipTrackingRef.current = false;
     } else {

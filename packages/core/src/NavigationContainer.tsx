@@ -1,5 +1,3 @@
-/* global __DEV__ */
-
 import * as React from 'react';
 import * as CommonActions from './CommonActions';
 import EnsureSingleNavigator from './EnsureSingleNavigator';
@@ -244,6 +242,7 @@ const Container = React.forwardRef(function NavigationContainer(
   );
 
   React.useEffect(() => {
+    // eslint-disable-next-line no-undef
     if (__DEV__) {
       if (
         typeof state !== 'undefined' &&
